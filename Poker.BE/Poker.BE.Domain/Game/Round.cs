@@ -1,6 +1,8 @@
 ﻿using Poker.BE.CrossUtility.Exceptions;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace Poker.BE.Domain.Game
 {
@@ -31,7 +33,6 @@ namespace Poker.BE.Domain.Game
         private Player lastPlayerToRaise;
 
         private Player dealer;
-        private bool isPreflop;
         private GamePreferences config;
         #endregion
 
@@ -44,13 +45,14 @@ namespace Poker.BE.Domain.Game
         public double TotalRaise { get { return totalRaise; } }
         public double LastRaise { get { return lastRaise; } }
         public Player LastPlayerToRaise { get { return lastPlayerToRaise; } }
+        public bool IsPreflop { get; set; }
 
         #endregion
 
         #region Constructors
         public Round(Player dealer, ICollection<Player> activeUnfoldedPlayers, Pot currentPot, bool isPreflop, GamePreferences config)
         {
-            this.isPreflop = isPreflop;
+            this.IsPreflop = isPreflop;
 
             //Set up players info
             this.dealer = dealer;
@@ -83,7 +85,7 @@ namespace Poker.BE.Domain.Game
         /// <remarks>UC024: Play a Betting Round</remarks>
         /// <see cref="https://docs.google.com/document/d/1OTee6BGDWK2usL53jdoeBOI-1Jh8wyNejbQ0ZroUhcA/edit#heading=h.kdfvqg7xrjgw"/>
         /// <returns>The remaining active unfolded players at the end of this round</returns>
-        public ICollection<Player> PlayBettingRound()
+        public ICollection<Player> PlayBettingRound(object _lock)
         {
             //Check Preconditions
             if (activeUnfoldedPlayers.Count < Hand.MINIMAL_NUMBER_OF_ACTIVE_PLAYERS_TO_START)
@@ -92,10 +94,17 @@ namespace Poker.BE.Domain.Game
             }
 
             //Play round until everyone is called or folded
-            while (LastPlayerToRaise != CurrentPlayer)
+            while (LastPlayerToRaise != CurrentPlayer || (IsPreflop &&
+                                                        currentPlayer == activeUnfoldedPlayers.ElementAt((activeUnfoldedPlayers.ToList().IndexOf(dealer) + 2) % activeUnfoldedPlayers.Count) &&
+                                                        liveBets[CurrentPlayer] == config.MinimumBet + config.AntesValue))
             {
-                //Waiting for the player to choose play move
-                while (CurrentPlayer.PlayMove == default(Move)) ;
+                // NOTE: Guard: Waiting for the player to choose play move
+                Monitor.Enter(_lock);
+                while (CurrentPlayer.PlayMove == Move.Null)
+                {
+                    Monitor.Wait(_lock);
+                }
+                Monitor.Exit(_lock);
 
                 //Make the move
                 PlayMove(CurrentPlayer.PlayMove, CurrentPlayer.AmountToBetOrCall);
@@ -162,6 +171,9 @@ namespace Poker.BE.Domain.Game
                 ((PotLimitHoldem)config).ChangePotLimitValue(CurrentPot.Value);
             }
 
+            //Change player's PlayMove to null
+            currentPlayer.ChoosePlayMove("Null", 0);
+
             //Change to next player
             CalculateNextPlayer();
         }
@@ -182,8 +194,8 @@ namespace Poker.BE.Domain.Game
         private void Check()
         {
             //if no one had raised
-            if (!(isPreflop && TotalRaise == config.AntesValue) && !(!isPreflop && TotalRaise == 0) &&
-                !(isPreflop &&
+            if (!(IsPreflop && TotalRaise == config.AntesValue) && !(!IsPreflop && TotalRaise == 0) &&
+                !(IsPreflop &&
                     currentPlayer == activeUnfoldedPlayers.ElementAt((activeUnfoldedPlayers.ToList().IndexOf(dealer) + 2) % activeUnfoldedPlayers.Count) &&
                     liveBets[CurrentPlayer] == config.MinimumBet + config.AntesValue))
             {
